@@ -2276,10 +2276,65 @@ function buildBuddyReply(userText) {
   return { text: buddyFallback() };
 }
 
-function getBuddyReply(userText) {
+function getOfflineReply(userText) {
   return new Promise(resolve => {
     setTimeout(() => resolve(buildBuddyReply(userText)), 650 + Math.random() * 700);
   });
+}
+
+// ══════════════════════════════════════════════════
+//  LIVE AI (Claude, via the Cloudflare Worker in worker.js)
+//  Paste your deployed worker URL below. The API key
+//  lives ONLY in the worker as a secret — never here.
+// ══════════════════════════════════════════════════
+const WORKER_URL = 'https://mnm.misha-sharan5.workers.dev';
+
+function buildProfileContext() {
+  if (typeof careerProfile === 'undefined' || !careerProfile) return '';
+  try {
+    const P = PASSIONS[careerProfile.main], S = VALUES[careerProfile.strongest], G = VALUES[careerProfile.growth];
+    const dream = careerProfile.dreamCareers && careerProfile.dreamCareers.length ? ` Dream careers: ${careerProfile.dreamCareers.join(', ')}.` : '';
+    return `Student's storyboard results: passion type ${P.name} (${P.blurb}); strongest quality ${S.name}; growth quality ${G.name}. Careers that fit: ${P.careers.join(', ')}.${dream}`;
+  } catch (e) { return ''; }
+}
+
+// Pull an optional ```chart {...}``` block out of the AI's reply
+function extractChart(raw) {
+  const m = raw.match(/```chart\s*([\s\S]*?)```/);
+  if (!m) return { text: raw.trim(), chart: null };
+  let chart = null;
+  try {
+    const c = JSON.parse(m[1]);
+    if (Array.isArray(c.labels) && Array.isArray(c.values) && c.labels.length === c.values.length) {
+      chart = { type: c.type || 'bar', title: c.title || 'Chart', labels: c.labels, values: c.values.map(Number) };
+    }
+  } catch (e) { /* ignore a malformed chart */ }
+  return { text: raw.replace(m[0], '').trim(), chart };
+}
+
+async function getLiveReply() {
+  const res = await fetch(WORKER_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      userName,
+      profile: buildProfileContext(),
+      messages: conversationHistory.slice(-20),
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.text) throw new Error(data.error || `Worker returned ${res.status}`);
+  return extractChart(data.text);
+}
+
+async function getBuddyReply(userText) {
+  if (!WORKER_URL) return getOfflineReply(userText);
+  try {
+    return await getLiveReply();
+  } catch (err) {
+    console.error('Live AI failed, using offline replies:', err);
+    return getOfflineReply(userText);
+  }
 }
 
 async function sendMsg() {
